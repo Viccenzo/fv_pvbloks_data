@@ -122,7 +122,7 @@ def get_measurement_data(f, u, pvdeviceId, addFullCurve,ip):
     if addFullCurve:
         curve = '?addFullCurve=true'
 
-    data['loggerRequestBeginTime'] : datetime.datetime.now().isoformat()
+    data['loggerRequestBeginTime'] = datetime.datetime.now().isoformat()
     endpoint = '/CalibratedMeasurement/' + f + '/' + u + '/device/' + str(pvdeviceId) + curve + '&addCsvMetadataHeader=false'
     #print(endpoint)
     resp = requests.get(_url(endpoint,ip),  headers={'Authorization': 'Bearer ' + token})
@@ -542,6 +542,8 @@ while  True:
                     queryStepEnd=queryEndTime
                 
                 data = get_measurement_data(queryStepTime.strftime('%Y-%m-%d %H:%M:%S'), queryStepEnd.strftime('%Y-%m-%d %H:%M:%S'), device['id'], True, ip)
+                print(data)
+
 
                 # Ler os dados do campo 'data_frame' usando StringIO para interpretar como CSV
                 df = pd.read_csv(StringIO(data['data_frame']))
