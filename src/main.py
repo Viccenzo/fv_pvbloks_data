@@ -542,7 +542,6 @@ while  True:
                     queryStepEnd=queryEndTime
                 
                 data = get_measurement_data(queryStepTime.strftime('%Y-%m-%d %H:%M:%S'), queryStepEnd.strftime('%Y-%m-%d %H:%M:%S'), device['id'], True, ip)
-                print(data)
 
 
                 # Ler os dados do campo 'data_frame' usando StringIO para interpretar como CSV
