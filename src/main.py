@@ -183,11 +183,11 @@ def get_trigger_data(activatedate):
     else:
         return resp.text
 
-def get_spectral_data(day):
+def get_spectral_data(ip,f,u,limit):
     global token
 
-    endpoint = '/Spectrometer/readings/csv?date=' + day
-    resp = requests.get(_url(endpoint),  headers={'Authorization': 'Bearer ' + token})
+    endpoint = '/Spectrometer/readings?limit=' + str(limit) + "&start=" + f + "&end=" + u
+    resp = requests.get(_url(endpoint,ip),  headers={'Authorization': 'Bearer ' + token})
 
     if resp.status_code != 200:
         token = get_token()
@@ -218,6 +218,22 @@ def get_spectral_status(ip):
     else:
         return resp.json()
 
+def get_spectral_device(ip):
+    global token
+
+    endpoint = '/Spectrometer/activespectrometers'
+    resp = requests.get(_url(endpoint,ip),  headers={'Authorization': 'Bearer ' + token})
+
+    if resp.status_code != 200:
+        token = get_token()
+        resp = requests.get(
+            _url(endpoint,ip),
+            headers={'Authorization': 'Bearer ' + token})
+
+    if resp.status_code != 200:
+        raise Exception('GET /' + endpoint + '{}'.format(resp.status_code))
+    else:
+        return resp.json()
 
 def merge_sequences(input_list):
     output_list = []
@@ -510,6 +526,26 @@ while  True:
             print("Error trying to get tables jump to next ip")
             continue
         queryEndTime = getLoggerCurrentTime(ip)
+        
+        # get spectro data
+        spectral_status = get_spectral_status(ip)
+        print(spectral_status)
+        if spectral_status["enabled"] == True:
+            spectral_device = get_spectral_device(ip)
+            f = f'2024-12-02%2014%3A00%3A00'
+            u = f'2024-12-02%2014%3A05%3A00'
+            limit = 5
+            spectral_data = get_spectral_data(ip,f,u,limit)
+            #Spectral_data_JSON = json.loads(spectral_data[0]["readings"][0])
+            print(spectral_data[0]["readings"][1]["serial"])
+            for device in spectral_device:
+                tableName = "shell_" + device["serial"] + "_" + device["sensorType"] + "_spectrometer"
+                lastTime = service.getLastTimestamp(tableName,groupName)
+                print(lastTime)
+                print(tableName)
+                print(device)
+
+        #get device data
         for device in devices:
             table = get_table_name(device)
             print(f"Table found: {table} with id {device['id']}")
