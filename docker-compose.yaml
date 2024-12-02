@@ -1,0 +1,19 @@
+services:
+  
+  fv_pvbloks_data:
+    container_name: fv_pvbloks_data
+    build: .
+    restart: always
+    volumes: # remember to replace /folder_on_disk/ with the path to where you want to store the files on the host machine
+      - "./ftp:/ftp"
+    image: viccenzo/fv_pvbloks_data
+    healthcheck:
+      test: ["CMD", "sh", "-c", "test $(find /tmp/heartbeat.txt -mmin -60)"]
+      interval: 900s
+      timeout: 10s
+      retries: 3
+
+
+
+  
+    
