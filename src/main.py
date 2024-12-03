@@ -12,6 +12,7 @@ import json
 import dotenv
 import mqtt_db_service as service
 from io import StringIO
+from zoneinfo import ZoneInfo
 
 #OutputFolder = ''
 OutputFolder = ''
@@ -527,6 +528,7 @@ pv_password = os.getenv("PV_PASSWORD")
 groupName = os.getenv("SERVICE_NAME")
 service.initDBService(user=os.getenv("USER"), service=groupName , server1=brokers[0], server2=brokers[1])
 ips = os.getenv("IPS").split(',')
+gmt_0 = ZoneInfo("UTC")
 
 #fazer while de tempo
 while  True:
@@ -548,8 +550,8 @@ while  True:
         spectral_devices = get_spectral_device(ip)
         tablesNames = []
         for i, device in enumerate(spectral_devices):
-            print(device)
             tableName = "shell_" + device["serial"] + "_" + device["sensorType"] + "_spectrometer"
+            print(tableName)
             tablesNames.append(tableName)  # Adiciona o nome da tabela à lista
 
         if spectral_status["enabled"] == True:
@@ -573,6 +575,7 @@ while  True:
             queryStartTime = lastTime + datetime.timedelta(seconds=1)
             queryStepTime = queryStartTime
             while queryStepTime < queryEndTime:
+                print(" ")
                 print(f'Query start time: {queryStepTime}')
                 print(f'Query end time: {queryEndTime}')
                 #if timeoutCount >= 3: resolver no futuro
@@ -588,20 +591,31 @@ while  True:
                     print("No data found, jumping to next attempt")
                     queryStepTime = queryStepEnd
                     continue
-                print("data found")
             
                 data = {}
                 data['loggerRequestBeginTime'] = datetime.datetime.now().isoformat()
                 spectral_data = get_spectral_data(ip,queryStepTime.strftime('%Y-%m-%d %H:%M:%S'),queryStepEnd.strftime('%Y-%m-%d %H:%M:%S'),limit)
                 data['loggerRequestEndTime'] = datetime.datetime.now().isoformat()
                 #Spectral_data_JSON = json.loads(spectral_data[0]["readings"][0])
-                print(spectral_data[0]["readings"][1]["serial"])
+                #print(spectral_data[0]["readings"][1]["serial"])
                 for device in spectral_data[0]["readings"]:
+                    #Corrigindo o timezone
+                    time_logger = device['timestamp']
+
+                    # Truncar para 6 dígitos na fração de segundos
+                    if "." in time_logger:
+                        base, tz = time_logger.split("+")
+                        time_part, fraction = base.split(".")
+                        fraction = (fraction + "000000")[:6]
+                        time_logger = f"{time_part}.{fraction}+{tz}"
+
+                    parsed_datetime = datetime.datetime.fromisoformat(time_logger)
+                    time_server = parsed_datetime.replace(tzinfo=gmt_0)
                     tableName = "shell_" + device["serial"] + "_" + device["sensorType"] + "_spectrometer"
-                    lastTime = service.getLastTimestamp(tableName,groupName)
+                    #lastTime = service.getLastTimestamp(tableName,groupName)
                     spectral_pairs = [(pair['wavelength'], pair['reading']) for pair in device['spectralPairs']]
                     df = pd.DataFrame({
-                        'TIMESTAMP': [device['timestamp']],
+                        'TIMESTAMP': [time_server],
                         'spectralPairs': [spectral_pairs]
                     })
                     data['df_data'] = df
@@ -620,9 +634,8 @@ while  True:
                         time.sleep(0.2)
                         healthCheck()
                         continue
-            
                 queryStepTime = queryStepEnd
-            
+                
         #get device data
         for device in devices:
             table = get_table_name(device)
@@ -645,6 +658,7 @@ while  True:
             #df_data = pd.DataFrame()
             timeoutCount = 0
             while queryStepTime < queryEndTime:
+                print(" ")
                 print(f'Query start time: {queryStepTime}')
                 print(f'Query end time: {queryEndTime}')
                 if timeoutCount >= 3:
