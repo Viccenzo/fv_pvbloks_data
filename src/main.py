@@ -97,6 +97,21 @@ def get_pvdevices(ip):
     else:
         pvdevices = resp.json()
         return pvdevices
+    
+def get_trigger_devices(ip):
+    global token
+    endpoint = '/EventTrigger/lastirradiancereadings?count=6'
+    resp = requests.get(_url(endpoint,ip), headers={'Authorization': 'Bearer ' + token})
+    if resp.status_code != 200:
+        print("trying to get token")
+        token = get_token()
+        resp = requests.get(
+            _url(endpoint,ip), headers={'Authorization': 'Bearer ' + token})
+    if resp.status_code != 200:
+        raise Exception('GET /' + endpoint + '{}'.format(resp.status_code))
+    else:
+        pvdevices = resp.json()
+        return pvdevices
 
 
 def get_meteo_pvdevice_id():
@@ -158,16 +173,11 @@ def get_ivcurve_data(f, u, pvdeviceId):
     else:
         return resp.json()
 
-def get_trigger_data(activatedate):
+def get_trigger_data(ip,f,u):
     global token
 
-    start = '%d-%02d-%02d' % (activatedate.year, activatedate.month, activatedate.day)
-    activatedate = activatedate + datetime.timedelta(days=1)
-    stop = '%d-%02d-%02d' % (activatedate.year, activatedate.month, activatedate.day)
-
-    endpoint = '/EventTrigger/irradiancereadings/csv?from=' + start + "&until=" + stop
-
-    resp = requests.get(_url(endpoint),  headers={'Authorization': 'Bearer ' + token})
+    endpoint = '/EventTrigger/irradiancereadings?from=' + f + '&until=' + u
+    resp = requests.get(_url(endpoint,ip),  headers={'Authorization': 'Bearer ' + token})
 
     if resp.status_code != 200:
         token = get_token()
@@ -175,12 +185,10 @@ def get_trigger_data(activatedate):
             _url(endpoint),
             headers={'Authorization': 'Bearer ' + token})
 
-
-
     if resp.status_code != 200:
         raise Exception('GET /' + endpoint + '{}'.format(resp.status_code))
     else:
-        return resp.text
+        return resp.json()
 
 def get_spectral_data(ip,f,u,limit):
     global token
@@ -425,7 +433,7 @@ print('PVBlocks collect (%s)' % (version))
 
 ## Server Service functions
 
-def getDataloggerData(ip,table,queryStepTime,queryEndTime):
+def getDataloggerData(ip,table,queryStepTime,queryEndTime): ## ver se rola retirar
     try:
         url = f'http://{ip}/?command=dataquery&uri=dl:{table}&format=json&mode=date-range&p1={queryStepTime.strftime("%Y-%m-%dT%H:%M:%S")}&p2={queryEndTime.strftime("%Y-%m-%dT%H:%M:%S")}'
         print(url)
@@ -469,7 +477,7 @@ def getDataloggerData(ip,table,queryStepTime,queryEndTime):
 
     return data
 
-def fixing(d_frame):
+def fixing(d_frame): ## ver se rola retirar
     names = []
     mydict = {'Datetime': 'TIMESTAMP'}
     for current, column in enumerate(d_frame):
@@ -483,7 +491,7 @@ def fixing(d_frame):
 
     return d_frame
 
-def getLoggerTabeNames(ip):
+def getLoggerTabeNames(ip): ## ver se pode retirar
     #get datalogger tables
     
     #try to get data from DataTableInfo
@@ -544,6 +552,79 @@ while  True:
             continue
         queryEndTime = getLoggerCurrentTime(ip)
         
+        #####################################################
+        # Gostaria de dizer que se esse código ta feio      #
+        # é culpa do pessoal que fez cada API para pegar    #
+        # dados de uma forma diferente...                   #
+        # assim não rola fazer modularizado -.-             #  
+        #####################################################
+
+        # getting trigger data
+        sample_trigger_data = get_trigger_devices(ip)
+        trigger_ids = {entry["measurementDeviceId"] for entry in sample_trigger_data}
+        print(trigger_ids)
+        
+        minTimestamp = None
+        for tableName in trigger_ids: # busca o timestamp mais antigo de todos os dados de spectrometro
+            table_name = 'shell_' + str(tableName) + "_" + ip + "_trigger"
+            lastTime = service.getLastTimestamp(table_name, groupName)
+            if lastTime == "mqtt timeout":
+                print("getting table last timestamp timeout")
+                continue
+            if lastTime == None: # table dont exist
+                print(f'This table: {tableName} dont exist on server. It will be created and Added to the next measurement loop') # Criar automáticamente no futuro?
+                continue
+            
+            # Atualiza o menor timestamp
+            if minTimestamp is None or lastTime < minTimestamp:
+                minTimestamp = lastTime
+
+        lastTime = minTimestamp
+        
+        lastTime = service.getLastTimestamp(table_name, groupName)
+
+        queryStartTime = lastTime + datetime.timedelta(seconds=1)
+        queryStepTime = queryStartTime
+        while queryStepTime < queryEndTime:
+            print(" ")
+            print(f'Query start time: {queryStepTime}')
+            print(f'Query end time: {queryEndTime}')
+            #if timeoutCount >= 3: resolver no futuro
+            #    print("timeout acheived max number of atempts")
+            #    continue
+            queryStepEnd = queryStepTime + datetime.timedelta(minutes=15)
+            if queryStepEnd>queryEndTime: # na chamada mais recente utilizar o valor final do logger
+                queryStepEnd=queryEndTime
+            
+            data = {}
+            data['loggerRequestBeginTime'] = datetime.datetime.now().isoformat()
+            trigger_data = get_trigger_data(ip,queryStepTime.strftime('%Y-%m-%d %H:%M:%S'),queryStepEnd.strftime('%Y-%m-%d %H:%M:%S'))
+            data['loggerRequestEndTime'] = datetime.datetime.now().isoformat()
+            
+            for trigger_id in trigger_ids:
+                tableName = 'shell_' + str(trigger_id) + "_" + ip + "_trigger"
+                print(" ")
+                print(tableName)
+                filtered_data = [entry for entry in trigger_data if entry["measurementDeviceId"] == trigger_id]
+                # Criar um DataFrame pandas apenas com as variáveis desejadas
+                df = pd.DataFrame(filtered_data, columns=["irradiance", "timestamp", "aboveThreshold"])
+                df.rename(columns={"timestamp": "TIMESTAMP"}, inplace=True)
+                data['df_data'] = df
+                #print(data)
+                data['loggerProcessingEndTime'] = datetime.datetime.now().isoformat()
+                data["report"] = "Success"
+                if data["report"] == "Success":
+                    response = service.sendDF(data, tableName, groupName)
+                    print(response)
+                    if response == "mqtt timeout":
+                        print("Sending data to mqtt timeout")
+                        continue
+                    time.sleep(0.2)
+                    healthCheck()
+                    continue
+                
+            queryStepTime = queryStepEnd
+
         # get spectro data
         spectral_status = get_spectral_status(ip)
         print(spectral_status)
