@@ -1,7 +1,5 @@
 version = 'v1.2'
 
-#APIkey = 'b761c9c6-f45e-47bb-b88a-ccb78465b3dd'
-#PVBlocksUrl = 'http://150.162.142.218'
 import requests
 import datetime
 import sys
@@ -218,6 +216,23 @@ def get_spectral_status(ip):
     else:
         return resp.json()
 
+def spectral_data_exists(ip,f,u,limit):
+    global token
+
+    endpoint = '/Spectrometer/availablereadings?limit=' + str(limit) + "&start=" + f + "&end=" + u
+    resp = requests.get(_url(endpoint,ip),  headers={'Authorization': 'Bearer ' + token})
+
+    if resp.status_code != 200:
+        token = get_token()
+        resp = requests.get(
+            _url(endpoint),
+            headers={'Authorization': 'Bearer ' + token})
+
+    if resp.status_code != 200:
+        raise Exception('GET /' + endpoint + '{}'.format(resp.status_code))
+    else:
+        return resp.json()
+    
 def get_spectral_device(ip):
     global token
 
@@ -530,21 +545,84 @@ while  True:
         # get spectro data
         spectral_status = get_spectral_status(ip)
         print(spectral_status)
-        if spectral_status["enabled"] == True:
-            spectral_device = get_spectral_device(ip)
-            f = f'2024-12-02%2014%3A00%3A00'
-            u = f'2024-12-02%2014%3A05%3A00'
-            limit = 5
-            spectral_data = get_spectral_data(ip,f,u,limit)
-            #Spectral_data_JSON = json.loads(spectral_data[0]["readings"][0])
-            print(spectral_data[0]["readings"][1]["serial"])
-            for device in spectral_device:
-                tableName = "shell_" + device["serial"] + "_" + device["sensorType"] + "_spectrometer"
-                lastTime = service.getLastTimestamp(tableName,groupName)
-                print(lastTime)
-                print(tableName)
-                print(device)
+        spectral_devices = get_spectral_device(ip)
+        tablesNames = []
+        for i, device in enumerate(spectral_devices):
+            print(device)
+            tableName = "shell_" + device["serial"] + "_" + device["sensorType"] + "_spectrometer"
+            tablesNames.append(tableName)  # Adiciona o nome da tabela à lista
 
+        if spectral_status["enabled"] == True:
+            minTimestamp = None
+            limit = 1
+            for tableName in tablesNames: # busca o timestamp mais antigo de todos os dados de spectrometro
+                lastTime = service.getLastTimestamp(tableName, groupName)
+                if lastTime == "mqtt timeout":
+                    print("getting table last timestamp timeout")
+                    continue
+                if lastTime == None: # table dont exist
+                    print(f'This table: {tableName} dont exist on server. It will be created and Added to the next measurement loop') # Criar automáticamente no futuro?
+                    continue
+                
+                # Atualiza o menor timestamp
+                if minTimestamp is None or lastTime < minTimestamp:
+                    minTimestamp = lastTime
+
+            lastTime = minTimestamp
+       
+            queryStartTime = lastTime + datetime.timedelta(seconds=1)
+            queryStepTime = queryStartTime
+            while queryStepTime < queryEndTime:
+                print(f'Query start time: {queryStepTime}')
+                print(f'Query end time: {queryEndTime}')
+                #if timeoutCount >= 3: resolver no futuro
+                #    print("timeout acheived max number of atempts")
+                #    continue
+                queryStepEnd = queryStepTime + datetime.timedelta(minutes=1)
+                
+                if queryStepEnd>queryEndTime: # na chamada mais recente utilizar o valor final do logger
+                    queryStepEnd=queryEndTime
+
+                data_exist = spectral_data_exists(ip,queryStepTime.strftime('%Y-%m-%d %H:%M:%S'),queryStepEnd.strftime('%Y-%m-%d %H:%M:%S'),limit)
+                if not data_exist:
+                    print("No data found, jumping to next attempt")
+                    queryStepTime = queryStepEnd
+                    continue
+                print("data found")
+            
+                data = {}
+                data['loggerRequestBeginTime'] = datetime.datetime.now().isoformat()
+                spectral_data = get_spectral_data(ip,queryStepTime.strftime('%Y-%m-%d %H:%M:%S'),queryStepEnd.strftime('%Y-%m-%d %H:%M:%S'),limit)
+                data['loggerRequestEndTime'] = datetime.datetime.now().isoformat()
+                #Spectral_data_JSON = json.loads(spectral_data[0]["readings"][0])
+                print(spectral_data[0]["readings"][1]["serial"])
+                for device in spectral_data[0]["readings"]:
+                    tableName = "shell_" + device["serial"] + "_" + device["sensorType"] + "_spectrometer"
+                    lastTime = service.getLastTimestamp(tableName,groupName)
+                    spectral_pairs = [(pair['wavelength'], pair['reading']) for pair in device['spectralPairs']]
+                    df = pd.DataFrame({
+                        'TIMESTAMP': [device['timestamp']],
+                        'spectralPairs': [spectral_pairs]
+                    })
+                    data['df_data'] = df
+                    #print(data)
+                    data['loggerProcessingEndTime'] = datetime.datetime.now().isoformat()
+                    data["report"] = "Success"
+                    
+                    if data["report"] == "Success":
+                        response = service.sendDF(data, tableName, groupName)
+                        print(response)
+                        if response == "mqtt timeout":
+                            print("Sending data to mqtt timeout")
+                            continue
+                        #queryStepTime = queryStepEnd + datetime.timedelta(seconds=1)
+                        
+                        time.sleep(0.2)
+                        healthCheck()
+                        continue
+            
+                queryStepTime = queryStepEnd
+            
         #get device data
         for device in devices:
             table = get_table_name(device)
